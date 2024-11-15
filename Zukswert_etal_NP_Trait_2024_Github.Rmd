@@ -1,0 +1,1885 @@
+---
+title: "MELNHE N x P Foliar Trait Analysis: February 2024"
+author: "Jenna Zukswert"
+date: "2024"
+output: html_document
+---
+
+This R code is for "Treatment Effects of Nitrogen and Phosphorus Addition on Foliar Traits in Six Northern Hardwood Species". This code is written to use the data file in the associated EDI package ("MELNHE_FoliarChemistryTraits_2021to2022.csv").
+
+Other data files used include:
+"MELNHE_TreeDiameters_2023_02102024_jz.csv"
+"NP_fol_2122mean_trait_edited.csv" (mean traits, edited with latest age distinction ("mid" vs. "late"))
+"treedbhMELNHE_chapt3_2_edited2024.csv" (RBAI of trees with multiple trunks added manually)
+
+If values for "MELNHE_FoliarChemistryTraits_2021to2022.csv" changes after publication in March 2024, the other data files should be evaluated to make sure they are also still up to date.
+
+Data Libraries:
+```{r}
+library(tidyverse)
+library(ggplot2) #for graphing
+library(dplyr) #for data wrangling and manipulation
+library(plyr)#for data wrangling and manipulation
+library(lme4) # for mixed models
+library(lmerTest) # to specify correct ANOVA
+library(arm) #for getting standard errors of fixed effects
+library(MuMIn) # for rsquareGLMM, which can be used to determine % variance explained by fixed effects alone and by both fixed and random effects
+library(effects) # to make N:P effect plots 
+library(vegan)#PCA
+library(ape) #used for PCA
+library(factoextra) #used for PCA
+library(cowplot) #for combining multiple plots
+```
+Get Data:
+```{r}
+foliage_all<-read.csv("MELNHE_FoliarChemistryTraits_2021to2022.csv")
+foliage_all<-foliage_all[c(1:505),]
+
+NP_fol<-subset(foliage_all, Treatment == "N"|Treatment == "Control"|Treatment == "P"|Treatment =="NP")
+NP_fol<-subset(NP_fol, Stand !="HBCa")
+NP_fol<-subset(NP_fol, Species !="QA")
+NP_fol<-subset(NP_fol, Species !="BA")
+
+#Change Ntrt and Ptrt to factor
+
+NP_fol$Ntrt <- as.factor(NP_fol$Ntrt)
+NP_fol$Ptrt <- as.factor(NP_fol$Ptrt)
+
+#Change name of area variables
+colnames(NP_fol)[colnames(NP_fol)=="SLA_m2_kg"] <- "SLA_m2kg"
+colnames(NP_fol)[colnames(NP_fol)=="LA_per_Leaf"] <- "Leaf_Area"
+
+#Add "Age2" variable
+NP_fol$Age2<-ifelse(NP_fol$Stand=="HBM"|NP_fol$Stand=="JBM"|NP_fol$Stand=="C6"|NP_fol$Stand=="C4"|NP_fol$Stand=="C2"|NP_fol$Stand=="C1","Mid","Old")
+NP_fol$Age2<-as.factor(NP_fol$Age2)
+
+#Check out data structure:
+str(NP_fol)
+
+#Make sure traits are numeric
+NP_fol$N<-as.numeric(NP_fol$N)
+NP_fol$d13C<-as.numeric(NP_fol$d13C)
+NP_fol$Site<-as.factor(NP_fol$Site)
+```
+
+Create ID for trees, plots, and stands:
+```{r}
+NP_fol$ID <- paste(NP_fol$Stand, NP_fol$Plot, NP_fol$Treatment, NP_fol$Species, NP_fol$Number, NP_fol$TagID, sep = "_")
+NP_fol$treeID<-paste(NP_fol$Stand, NP_fol$Plot, NP_fol$Species, NP_fol$TagID, sep="_")
+NP_fol$plotID<-paste(NP_fol$Stand, NP_fol$Plot, sep="_")
+```
+
+Transformations
+```{r}
+#log transformation of P
+NP_fol$P178ln<-log(NP_fol$P.178)
+
+#Area-based P
+NP_fol$Parea<-(NP_fol$P.178/NP_fol$SLA_cm2_g)*10
+
+#Area-based N
+NP_fol$Narea<-(NP_fol$N/NP_fol$SLA_cm2_g)*10
+```
+
+Visualize nutrients and traits by species
+```{r}
+#Create vector of variables:
+NP_fol$Treatment<- factor(NP_fol$Treatment, levels = c("Control","N","P","NP"), ordered =T)
+NPfolsub<-subset(NP_fol, select=c("Leaf_Area", "SLA_m2kg","LDMC","N","P.214","P.178", "Ca","Mg","K","d13C","d15N","CN"))
+
+
+#Create a subset of data to graph (i.e., data not included in final models)
+NP_folgraph<-subset(NP_fol, TagID !="8457")
+NP_folgraph2<-subset(NP_folgraph, TagID !="1479")
+NP_folgraph2<-subset(NP_folgraph2, TagID !="7578")
+NP_folgraph13c<-subset(NP_folgraph2, Stand=="C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+NP_folgraph2$Age2<-recode_factor(NP_folgraph2$Age2, "Mid-successional"="Mid")
+NP_folgraph2$Age2<-recode_factor(NP_folgraph2$Age2, "Late"="Old")
+
+
+#Use this code to make graphs of N, P, LDMC (swap in variables)
+plot<-ggplot(NP_folgraph2,aes(x=Stand, y = LDMC,color=Treatment,fill=Treatment, shape = Age2))+
+  geom_point(size=4, position = position_dodge(0.5), alpha=0.5)+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=3)+
+     scale_color_manual(values =c("gray30","blue", "red", "purple"))+
+       scale_fill_manual(values =c("gray30","blue", "red", "purple"))+
+  scale_shape_manual(values = c(17,16))+
+ylab(parse(text='scriptstyle(LDMC~~(mg~~g^{-1}))'))+
+    labs(color = 'Treatment')+
+  labs(shape = 'Stage')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot+facet_wrap(vars(Species_ID), nrow=2, ncol=3)
+
+#SLA
+plot<-ggplot(NP_folgraph2,aes(x=Stand, y = SLA_m2kg, fill =Treatment, color=Treatment, shape = Age2))+
+  geom_point(size=4, position = position_dodge(0.5), alpha=0.5)+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=3)+
+     scale_color_manual(values =c("gray30","blue", "red", "purple"))+
+       scale_fill_manual(values =c("gray30","blue", "red", "purple"))+
+  ylab(parse(text='scriptstyle(SLA~~(m^{2}~~kg^{-1}))'))+
+    labs(color = 'Treatment')+
+  labs(shape = 'Stage')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot+facet_wrap(vars(Species_ID), nrow=2, ncol=3)
+
+
+#Foliar d13C
+plot<-ggplot(NP_folgraph13c,aes(x=Stand, y = d13C, color=Treatment, shape = Age2))+
+  geom_point(size=4, position = position_dodge(0.5), alpha=0.5)+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=3)+
+     scale_color_manual(values =c("gray30","blue", "red", "purple"))+
+       scale_fill_manual(values =c("gray30","blue", "red", "purple"))+
+  ylab(expression(paste(delta ^13,'C'))) +
+    labs(color = 'Treatment')+
+  labs(shape = 'Stage')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot+facet_wrap(vars(Species_ID), nrow=2, ncol=3)
+
+```
+
+Species-Specific Analyses: Beech
+```{r}
+#Prepare subset of beech data
+NP_folBE<-as.data.frame(subset(NP_fol, Species =="BE"))
+NP_folBE<-subset(NP_folBE, Stand != "JBM")
+NP_folBE$Ca<-as.numeric(NP_folBE$Ca)
+NP_folBE_d13C<-subset(NP_folBE, Stand != "C2")
+NP_folBE_d13C<-subset(NP_folBE_d13C, Stand != "C6")
+
+#N 
+BE_Nt<-lmer(N~Ntrt*Ptrt+Age2 +Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_Nt)
+hist(resid(BE_Nt))
+shapiro.test(resid(BE_Nt))
+plot(allEffects(BE_Nt))
+summary(BE_Nt)
+fixef(BE_Nt)
+se.fixef(BE_Nt)
+anova(BE_Nt, type=3)
+
+#Area-based N
+BE_Ntarea<-lmer(Narea~Ntrt*Ptrt+Age2 +Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_Ntarea)
+hist(resid(BE_Ntarea))
+shapiro.test(resid(BE_Ntarea))
+plot(allEffects(BE_Ntarea))
+summary(BE_Ntarea)
+anova(BE_Ntarea, type=3)
+
+NP_folBE$Narealn<-log(NP_folBE$Narea)
+BE_Ntarea2<-lmer(Narealn~Ntrt*Ptrt+Age2 +Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_Ntarea2)
+hist(resid(BE_Ntarea2))
+shapiro.test(resid(BE_Ntarea2))
+plot(allEffects(BE_Ntarea2))
+summary(BE_Ntarea2)
+anova(BE_Ntarea2, type=3)
+
+
+#d13C
+BE_13Ct<-lmer(d13C~Ntrt*Ptrt+Age2+ Site+(1|Stand/Plot),data=NP_folBE_d13C)
+plot(BE_13Ct)
+hist(resid(BE_13Ct))
+shapiro.test(resid(BE_13Ct))
+anova(BE_13Ct, type=3)
+plot(allEffects(BE_13Ct))
+summary(BE_13Ct)
+fixef(BE_13Ct)
+se.fixef(BE_13Ct)
+
+#P
+BE_Pt<-lmer(P.178~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_Pt)
+hist(resid(BE_Pt))
+shapiro.test(resid(BE_Pt))
+anova(BE_Pt, type=3)
+fixef(BE_Pt)
+se.fixef(BE_Pt)
+
+#Try P without outlier (C6-4-BE3-8872)
+NP_folBE_Pout<-subset(NP_folBE, TagID !="8872")
+
+#P with C6-4-BE3-8872 removed
+BE_Pt2<-lmer(P.178~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folBE_Pout)
+plot(BE_Pt2)
+hist(resid(BE_Pt2))
+shapiro.test(resid(BE_Pt2))
+anova(BE_Pt2, type=3)
+fixef(BE_Pt2)
+se.fixef(BE_Pt2)
+
+#Ln P with outlier removed
+BE_Ptln2<-lmer(P178ln~Ntrt*Ptrt+Age2+Site+(1|Stand/Plot),data=NP_folBE_Pout)
+plot(BE_Ptln2)
+hist(resid(BE_Ptln2))
+shapiro.test(resid(BE_Ptln2))
+anova(BE_Ptln2, type=3)
+plot(allEffects(BE_Ptln2))
+summary(BE_Ptln2)
+fixef(BE_Ptln2)
+se.fixef(BE_Ptln2)
+
+#Area-based P
+BE_Pta<-lmer(Parea~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=NP_folBE)
+plot(BE_Pta)
+hist(resid(BE_Pta))
+shapiro.test(resid(BE_Pta))
+anova(BE_Pta, type = 3)
+plot(allEffects(BE_Pta))
+
+NP_folBE$Parealn<-log(NP_folBE$Parea)
+
+BE_Pta2<-lmer(Parealn~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=NP_folBE)
+plot(BE_Pta2)
+hist(resid(BE_Pta2))
+shapiro.test(resid(BE_Pta2))
+anova(BE_Pta2, type = 3)
+plot(allEffects(BE_Pta2))
+BE_Pta
+
+#LDMC
+BE_LDMCt<-lmer(LDMC~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_LDMCt)
+hist(resid(BE_LDMCt))
+shapiro.test(resid(BE_LDMCt))
+anova(BE_LDMCt, type=3)
+plot(allEffects(BE_LDMCt))
+summary(BE_LDMCt)
+fixef(BE_LDMCt)
+se.fixef(BE_LDMCt)
+emmeans(BE_LDMCt, pairwise ~Ntrt:Ptrt)
+interaction.plot(x.factor = NP_folBE$Ntrt,
+                 trace.factor = NP_folBE$Ptrt,
+                 response = NP_folBE$LDMC,
+                 fun = mean)
+
+#SLA
+BE_SLAt<-lmer(SLA_m2kg~Ntrt*Ptrt+Age2+Site+ (1|Stand/Plot),data=NP_folBE)
+plot(BE_SLAt)
+hist(resid(BE_SLAt))
+shapiro.test(resid(BE_SLAt))
+anova(BE_SLAt, type=3)
+plot(allEffects(BE_SLAt))
+summary(BE_SLAt)
+fixef(BE_SLAt)
+se.fixef(BE_SLAt)
+emmeans(BE_SLAt, pairwise ~Age2)
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folBE_d13C,aes(x=Stand, y = d13C, color=Treatment))+
+  geom_point(size=3, aes(shape = Species))+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar d13C")+
+  theme_bw(base_size=16)
+print(plot)
+```
+
+
+Species-Specific Analyses: Sugar Maple
+```{r}
+NP_folSM<-as.data.frame(subset(NP_fol, Species =="SM"))
+NP_folSM_d13C<-subset(NP_folSM, Stand != "C8")
+
+#N 
+SM_Nt<-lmer(N~Ntrt*Ptrt+Age2+ Site+ (1|Stand/Plot),data=NP_folSM)
+ranef(SM_Nt)
+fixef(SM_Nt)
+se.fixef(SM_Nt)
+plot(SM_Nt)
+hist(resid(SM_Nt))
+shapiro.test(resid(SM_Nt))
+anova(SM_Nt, type=3)
+summary(SM_Nt)
+emmeans(SM_Nt, ~Ntrt)
+
+#Area-based N 
+SM_Ntarea<-lmer(Narea~Ntrt*Ptrt+Age2+ Site+ (1|Stand/Plot),data=NP_folSM)
+ranef(SM_Ntarea)
+fixef(SM_Ntarea)
+se.fixef(SM_Ntarea)
+plot(SM_Ntarea)
+hist(resid(SM_Ntarea))
+shapiro.test(resid(SM_Ntarea))
+anova(SM_Ntarea, type=3)
+summary(SM_Ntarea)
+plot(allEffects(SM_Ntarea))
+
+#d13C
+SM_13Ct<-lmer(d13C~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folSM)
+plot(SM_13Ct)
+hist(resid(SM_13Ct))
+shapiro.test(resid(SM_13Ct))
+fixef(SM_13Ct)
+se.fixef(SM_13Ct)
+anova(SM_13Ct, type=3)
+summary(SM_13Ct)
+ranef(SM_13Ct)
+emmeans(SM_13Ct, pairwise ~Age2)
+
+#P 
+SM_Pt<-lmer(P.178~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folSM)
+plot(SM_Pt)
+hist(resid(SM_Pt))
+shapiro.test(resid(SM_Pt))
+fixef(SM_Pt)
+se.fixef(SM_Pt)
+anova(SM_Pt, type=3)
+plot(allEffects(SM_Pt))
+difflsmeans(SM_Pt, df = "Satterthwaite")
+
+#Area-based P
+SM_Pta<-lmer(Parea~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=NP_folSM)
+plot(SM_Pta)
+hist(resid(SM_Pta))
+shapiro.test(resid(SM_Pta))
+anova(SM_Pta, type=3)
+plot(allEffects(SM_Pta))
+
+#LDMC
+SM_LDMCt<-lmer(LDMC~Ntrt*Ptrt+Age2 +Site+(1|Stand/Plot),data=NP_folSM)
+plot(SM_LDMCt)
+hist(resid(SM_LDMCt))
+shapiro.test(resid(SM_LDMCt))
+ranef(SM_LDMCt)
+fixef(SM_LDMCt)
+se.fixef(SM_LDMCt)
+anova(SM_LDMCt, type=3)
+plot(allEffects(SM_LDMCt))
+SM_LDMCt
+emmeans(SM_LDMCt, pairwise ~Ptrt)
+resid(SM_LDMCt)
+
+#LDMC again without the outliers:
+NP_folSM_LDMCout<-subset(NP_folSM, TagID != "8609")
+NP_folSM_LDMCout<-subset(NP_folSM_LDMCout, TagID != "306")
+
+SM_LDMCt2<-lmer(LDMC~Ntrt*Ptrt+Age2 +Site+(1|Stand/Plot),data=NP_folSM_LDMCout)
+plot(SM_LDMCt2)
+hist(resid(SM_LDMCt2))
+shapiro.test(resid(SM_LDMCt2))
+anova(SM_LDMCt2, type=3)
+plot(allEffects(SM_LDMCt2))
+
+#SLA
+SM_SLAt<-lmer(SLA_m2kg~Ntrt*Ptrt+Age2  + (1|Stand/Plot),data=NP_folSM)
+plot(SM_SLAt)
+hist(resid(SM_SLAt))
+shapiro.test(resid(SM_SLAt))
+fixef(SM_SLAt)
+se.fixef(SM_SLAt)
+anova(SM_SLAt, type=3)
+plot(allEffects(SM_SLAt))
+SM_SLAt
+emmeans(SM_SLAt, pairwise ~Age2)
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folSM,aes(x=Stand, y = N, color=Treatment))+
+  geom_point(size=3)+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar N")+
+  theme_bw(base_size=24)+
+  theme(plot.background = element_blank(),
+    panel.grid.minor = element_blank())
+print(plot)
+```
+
+Species-Specific Analyses: Yellow Birch
+```{r}
+NP_folYB<-as.data.frame(subset(NP_fol, Species =="YB"))
+NP_folYB_d13C<-subset(NP_folYB, Stand != "C6")
+
+#N
+YB_Nt<-lmer(N~Ntrt*Ptrt+Age2+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_Nt)
+hist(resid(YB_Nt))
+shapiro.test(resid(YB_Nt))
+fixef(YB_Nt)
+se.fixef(YB_Nt)
+anova(YB_Nt, type=3)
+emmeans(YB_Nt, ~Ntrt)
+
+#Area-based N
+YB_Nta<-lmer(Narea~Ntrt*Ptrt+Age2+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_Nta)
+hist(resid(YB_Nta))
+shapiro.test(resid(YB_Nta))
+fixef(YB_Nta)
+se.fixef(YB_Nta)
+anova(YB_Nta, type=3)
+plot(allEffects(YB_Nta))
+
+#Area-based N (ln)
+NP_folYB$Narealn<-log(NP_folYB$Narea)
+YB_Nta2<-lmer(Narealn~Ntrt*Ptrt+Age2+Site+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_Nta2)
+hist(resid(YB_Nta2))
+shapiro.test(resid(YB_Nta2))
+anova(YB_Nta2, type=3)
+
+#d13C
+YB_13Ct<-lmer(d13C~Ntrt*Ptrt+Age2 + Site +(1|Stand/Plot),data=NP_folYB_d13C)
+ranef(YB_13Ct)
+plot(YB_13Ct)
+hist(resid(YB_13Ct))
+shapiro.test(resid(YB_13Ct))
+fixef(YB_13Ct)
+se.fixef(YB_13Ct)
+anova(YB_13Ct, type=3)
+YB_13Ct
+ranef(YB_13Ct)
+
+#P 
+YB_Pt<-lmer(P.178~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_Pt)
+hist(resid(YB_Pt))
+shapiro.test(resid(YB_Pt))
+fixef(YB_Pt)
+se.fixef(YB_Pt)
+anova(YB_Pt, type=3)
+emmeans(YB_Pt, pairwise~Ntrt:Ptrt)
+
+#Area-based P
+YB_Pta<-lmer(Parea~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=NP_folYB)
+plot(YB_Pta)
+hist(resid(YB_Pta))
+shapiro.test(resid(YB_Pta))
+anova(YB_Pta, type=3)
+
+#Area-based P: transformation
+NP_folYB$Parealn<-log(NP_folYB$Parea)
+YB_Pta2<-lmer(Parealn~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=NP_folYB)
+plot(YB_Pta2)
+hist(resid(YB_Pta2))
+shapiro.test(resid(YB_Pta2))
+anova(YB_Pta2, type=3)
+
+#LDMC
+YB_LDMCt<-lmer(LDMC~Ntrt*Ptrt+Age2 +Site+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_LDMCt)
+hist(resid(YB_LDMCt))
+shapiro.test(resid(YB_LDMCt))
+fixef(YB_LDMCt)
+se.fixef(YB_LDMCt)
+anova(YB_LDMCt, type=3)
+plot(allEffects(YB_LDMCt))
+emmeans(YB_LDMCt, pairwise ~ Age2)
+
+#SLA
+YB_SLAt<-lmer(SLA_m2kg~Ntrt*Ptrt+Age2+ (1|Stand/Plot),data=NP_folYB)
+plot(YB_SLAt)
+hist(resid(YB_SLAt))
+shapiro.test(resid(YB_SLAt))
+fixef(YB_SLAt)
+se.fixef(YB_SLAt)
+anova(YB_SLAt, type=3)
+plot(allEffects(YB_SLAt))
+YB_SLAt
+emmeans(YB_SLAt, pairwise ~Age2)
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folYB,aes(x=Stand, y = d13C, color=Treatment))+
+  geom_point(size=3, aes(shape = Species))+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar d13C")+
+  theme_bw(base_size=24)+
+  theme(plot.background = element_blank(),
+    panel.grid.minor = element_blank())
+print(plot)
+```
+
+Species-Specific Analyses: White Birch
+```{r}
+NP_folWB<-as.data.frame(subset(NP_fol, Species =="WB"))
+NP_folWB_d13C<-subset(NP_folWB, Stand != "C2")
+NP_folWB_d13C<-subset(NP_folWB_d13C, Stand != "C6")
+
+#N
+WB_Nt<-lmer(N~Ntrt*Ptrt+ Site+ (1|Stand/Plot),data=NP_folWB)
+plot(WB_Nt)
+hist(resid(WB_Nt))
+shapiro.test(resid(WB_Nt))
+ranef(WB_Nt)
+anova(WB_Nt, type=3)
+fixef(WB_Nt)
+se.fixef(WB_Nt)
+summary(WB_Nt)
+
+#Area-based N
+WB_Nta<-lmer(Narea~Ntrt*Ptrt+ Site+ (1|Stand/Plot),data=NP_folWB)
+plot(WB_Nta)
+hist(resid(WB_Nta))
+shapiro.test(resid(WB_Nta))
+ranef(WB_Nta)
+anova(WB_Nta, type=3)
+fixef(WB_Nta)
+se.fixef(WB_Nta)
+summary(WB_Nta)
+plot(allEffects(WB_Nta))
+
+#d13C
+WB_13Ct<-lmer(d13C~Ntrt*Ptrt+(1|Stand/Plot),data=NP_folWB_d13C)
+plot(WB_13Ct)
+hist(resid(WB_13Ct))
+shapiro.test(resid(WB_13Ct))
+ranef(WB_13Ct)
+anova(WB_13Ct, type=3)
+fixef(WB_13Ct)
+se.fixef(WB_13Ct)
+summary(WB_13Ct)
+emmeans(WB_13Ct, pairwise~Ntrt)
+
+#P
+WB_Pt<-lmer(P.178~Ntrt*Ptrt + Site + (1|Stand/Plot),data=NP_folWB)
+plot(WB_Pt)
+hist(resid(WB_Pt))
+shapiro.test(resid(WB_Pt))
+anova(WB_Pt, type=3)
+
+#Ln P 
+WB_Ptln<-lmer(P178ln~Ntrt*Ptrt+Site + (1|Stand/Plot),data=NP_folWB)
+plot(WB_Ptln)
+hist(resid(WB_Ptln))
+shapiro.test(resid(WB_Ptln))
+fixef(WB_Ptln)
+se.fixef(WB_Ptln)
+anova(WB_Ptln, type=3)
+plot(allEffects(WB_Ptln))
+
+#Area-based P
+WB_Pta<-lmer(Parea~Ntrt*Ptrt+Site + (1|Stand/Plot),data=NP_folWB)
+plot(WB_Pta)
+hist(resid(WB_Pta))
+shapiro.test(resid(WB_Pta))
+anova(WB_Pta, type =3)
+
+NP_folWB$Parealn<-log(NP_folWB$Parea)
+WB_Pta2<-lmer(Parealn~Ntrt*Ptrt+Site + (1|Stand/Plot),data=NP_folWB)
+plot(WB_Pta2)
+hist(resid(WB_Pta2))
+shapiro.test(resid(WB_Pta2))
+anova(WB_Pta2, type =3)
+
+#LDMC
+WB_LDMCt<-lmer(LDMC~Ntrt*Ptrt+Site+(1|Stand/Plot),data=NP_folWB)
+plot(WB_LDMCt)
+hist(resid(WB_LDMCt))
+shapiro.test(resid(WB_LDMCt))
+anova(WB_LDMCt, type=3)
+plot(allEffects(WB_LDMCt))
+fixef(WB_LDMCt)
+ranef(WB_LDMCt)
+se.fixef(WB_LDMCt)
+
+#SLA
+NP_folWB_SLAout<-subset(NP_folWB, TagID != "8513")
+WB_SLAt<-lmer(SLA_m2kg~Ntrt*Ptrt + Site+ (1|Stand/Plot),data=NP_folWB)
+plot(WB_SLAt)
+hist(resid(WB_SLAt))
+shapiro.test(resid(WB_SLAt))
+anova(WB_SLAt, type=3)
+plot(allEffects(WB_SLAt))
+fixef(WB_SLAt)
+se.fixef(WB_SLAt)
+ranef(WB_SLAt)
+
+WB_SLAt2<-lmer(SLA_m2kg~Ntrt*Ptrt + Site+ (1|Stand/Plot),data=NP_folWB_SLAout)
+plot(WB_SLAt2)
+hist(resid(WB_SLAt2))
+shapiro.test(resid(WB_SLAt2))
+anova(WB_SLAt2, type=3)
+plot(allEffects(WB_SLAt2))
+fixef(WB_SLAt2)
+se.fixef(WB_SLAt2)
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folWB,aes(x=Stand, y = d13C, color=Treatment))+
+  geom_point(size=3, aes(shape = Species))+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar d13C")+
+  theme_bw(base_size=16)
+print(plot)
+```
+
+Species-Specific Analyses: Red Maple
+```{r}
+NP_folRM<-as.data.frame(subset(NP_fol, Species =="RM"))
+NP_folRM<-subset(NP_folRM, Stand != "HBO")
+NP_folRM_d13C<-subset(NP_folRM, Stand != "C2")
+NP_folRM_d13C<-subset(NP_folRM_d13C, Stand != "C6")
+
+#N 
+RM_Nt<-lmer(N~Ntrt*Ptrt+(1|Stand/Plot),data=NP_folRM)
+plot(RM_Nt)
+hist(resid(RM_Nt))
+shapiro.test(resid(RM_Nt))
+fixef(RM_Nt)
+se.fixef(RM_Nt)
+anova(RM_Nt, type=3)
+
+#Area-based N
+RM_Nta<-lmer(Narea~Ntrt*Ptrt+(1|Stand/Plot),data=NP_folRM)
+plot(RM_Nta)
+hist(resid(RM_Nta))
+shapiro.test(resid(RM_Nta))
+fixef(RM_Nta)
+se.fixef(RM_Nta)
+anova(RM_Nta, type=3)
+plot(allEffects(RM_Nta))
+
+#d13C
+RM_13Ct<-lmer(d13C~Ntrt*Ptrt+(1|Stand/Plot),data=NP_folRM_d13C)
+plot(RM_13Ct)
+hist(resid(RM_13Ct))
+shapiro.test(resid(RM_13Ct))
+fixef(RM_13Ct)
+se.fixef(RM_13Ct)
+ranef(RM_13Ct)
+anova(RM_13Ct, type=3)
+
+#P 
+RM_Pt<-lmer(P.178~Ntrt*Ptrt +Site+(1|Stand/plotID),data=NP_folRM)
+plot(RM_Pt)
+hist(resid(RM_Pt))
+shapiro.test(resid(RM_Pt))
+ranef(RM_Pt)
+fixef(RM_Pt)
+se.fixef(RM_Pt)
+anova(RM_Pt, type=3)
+plot(allEffects(RM_Pt))
+
+#Area-based P
+RM_Pta<-lmer(Parea~Ntrt*Ptrt +Site+ (1|Stand/Plot),data=NP_folRM)
+plot(RM_Pta)
+hist(resid(RM_Pta))
+shapiro.test(resid(RM_Pta))
+anova(RM_Pta, type=3)
+plot(allEffects(RM_Pta))
+
+#LDMC
+RM_LDMCt<-lmer(LDMC~Ntrt*Ptrt + Site+ (1|Stand/Plot),data=NP_folRM)
+plot(RM_LDMCt)
+hist(resid(RM_LDMCt))
+shapiro.test(resid(RM_LDMCt))
+ranef(RM_LDMCt)
+fixef(RM_LDMCt)
+se.fixef(RM_LDMCt)
+anova(RM_LDMCt, type=3)
+plot(allEffects(RM_LDMCt))
+
+#SLA
+NP_folRM$lnSLA<-log(NP_folRM$SLA_m2kg)
+RM_SLAt<-lmer(lnSLA~Ntrt*Ptrt +Site + (1|Stand/Plot),data=NP_folRM)
+plot(RM_SLAt)
+hist(resid(RM_SLAt))
+shapiro.test(resid(RM_SLAt))
+ranef(RM_SLAt)
+fixef(RM_SLAt)
+se.fixef(RM_SLAt)
+anova(RM_SLAt, type=3)
+plot(allEffects(RM_SLAt))
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folRM,aes(x=Stand, y = d13C, color=Treatment))+
+  geom_point(size=3, aes(shape = Species))+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar N")+
+  theme_bw(base_size=16)
+print(plot)
+```
+
+Species-Specific Analyses: Pin Cherry
+```{r}
+NP_folPC<-as.data.frame(subset(NP_fol, Species =="PC"))
+NP_folPC_Nprelim<-subset(NP_folPC, !is.na(NP_folPC$N))
+NP_folPC_Nprel<-subset(NP_folPC)
+
+#N
+PC_Nt<-lmer(N~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_Nt)
+hist(resid(PC_Nt))
+shapiro.test(resid(PC_Nt))
+fixef(PC_Nt)
+se.fixef(PC_Nt)
+ranef(PC_Nt)
+anova(PC_Nt, type=3)
+
+#Area-based N
+PC_Nta<-lmer(Narea~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_Nta)
+hist(resid(PC_Nta))
+shapiro.test(resid(PC_Nta))
+anova(PC_Nta, type=3)
+plot(allEffects(PC_Nta))
+
+#d13C
+PC_13Ct<-lmer(d13C~Ntrt*Ptrt + (1|Plot),data=NP_folPC)
+plot(PC_13Ct)
+hist(resid(PC_13Ct))
+shapiro.test(resid(PC_13Ct))
+fixef(PC_13Ct)
+se.fixef(PC_13Ct)
+anova(PC_13Ct, type=3)
+
+#P
+PC_Pt<-lmer(P178ln~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_Pt)
+hist(resid(PC_Pt))
+shapiro.test(resid(PC_Pt))
+ranef(PC_Pt)
+fixef(PC_Pt)
+se.fixef(PC_Pt)
+anova(PC_Pt, type=3)
+
+#Area-based P
+PC_Pta<-lmer(Parea~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_Pta)
+hist(resid(PC_Pta))
+shapiro.test(resid(PC_Pta))
+anova(PC_Pta, type=3)
+plot(allEffects(PC_Pta))
+
+#LDMC
+PC_LDMCt<-lmer(LDMC~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_LDMCt)
+hist(resid(PC_LDMCt))
+shapiro.test(resid(PC_LDMCt))
+anova(PC_LDMCt, type=3)
+fixef(PC_LDMCt)
+se.fixef(PC_LDMCt)
+plot(allEffects(PC_LDMCt))
+
+NP_folPC_LDMCout<-subset(NP_folPC, TagID !="2193")
+PC_LDMCt2<-lmer(LDMC~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC_LDMCout)
+plot(PC_LDMCt2)
+hist(resid(PC_LDMCt2))
+shapiro.test(resid(PC_LDMCt2))
+anova(PC_LDMCt2, type=3)
+fixef(PC_LDMCt2)
+se.fixef(PC_LDMCt2)
+plot(allEffects(PC_LDMCt2))
+emmeans(PC_LDMCt2, pairwise~Ptrt)
+
+#SLA
+PC_SLAt<-lmer(SLA_m2kg~Ntrt*Ptrt + (1|Stand/Plot),data=NP_folPC)
+plot(PC_SLAt)
+hist(resid(PC_SLAt))
+shapiro.test(resid(PC_SLAt))
+ranef(PC_SLAt)
+fixef(PC_SLAt)
+se.fixef(PC_SLAt)
+anova(PC_SLAt, type=3)
+plot(allEffects(PC_SLAt))
+
+#Plot with treatment across stands
+plot<-ggplot(NP_folPC,aes(x=Stand, y = d13C, color=Treatment))+
+  geom_point(size=3, aes(shape = Species))+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Foliar N")+
+  theme_bw(base_size=16)
+print(plot)
+```
+
+Community-Weighted Mean Analyses
+
+Steps:
+- Calculate mean trait value per species
+- Merge dataset with mean trait value and relative basal area
+- Calculate CWM by summing the products of mean trait value and relative basal area
+- Make models for each trait: N, P, SLA, LDMC, d13C 
+
+Create a file with mean foliar traits:
+```{r}
+str(NP_fol)
+
+NP_fol$Age2<-ifelse(NP_fol$Stand=="C1"|NP_fol$Stand=="C2"|NP_fol$Stand=="C4"|NP_fol$Stand=="C6"|NP_fol$Stand=="HBM"|NP_fol$Stand=="JBM","Mid","Late")
+NP_fol$Age<-ifelse(NP_fol$Stand=="C1"|NP_fol$Stand=="C2"|NP_fol$Stand=="C4"|NP_fol$Stand=="C6"|NP_fol$Stand=="HBM"|NP_fol$Stand=="JBM","Mid","Late")
+
+NP_fol$Age3<-factor(NP_fol$Age,  levels=c("Mid","Late"))
+
+NP_fol$Age<-NP_fol$Stand_Age
+NP_fol2<-subset(NP_fol, TagID!= "1479")
+NP_fol_2122mean_trait<-ddply(NP_fol2, c("Site","Stand","plotID","Treatment", "Ntrt","Ptrt","Species", "Age"), summarise,
+      N = mean(N, na.rm=T),
+      P = mean(P.178, na.rm=T),
+      LDMC = mean(LDMC, na.rm=T),
+      SLA = mean(SLA_m2kg, na.rm=T),
+      StomDen = mean(Stomatal_Density, na.rm=T),
+      d13C = mean(d13C, na.rm=T),
+      Parea = mean(Parea, na.rm=T),
+      Narea = mean(Narea, na.rm=T))
+
+str(NP_fol_2122mean_trait)
+write.csv(NP_fol_2122mean_trait, "NP_fol_2122mean_trait.csv")
+```
+
+Import basal area data:
+```{r}
+treedbhMELNHE<-read.csv("MELNHE_TreeDiameters_2023_02102024_jz.csv")
+library(car)
+library(dplyr)
+treedbhMELNHE$Treatment<-recode_factor(treedbhMELNHE$Treatment, "Con"="Control")
+treedbhMELNHE$Ntrt<-ifelse(treedbhMELNHE$Treatment=="N"|treedbhMELNHE$Treatment=="NP", 1, 0)
+treedbhMELNHE$Ptrt<-ifelse(treedbhMELNHE$Treatment=="P"|treedbhMELNHE$Treatment=="NP", 1, 0)
+treedbhMELNHE$plotID<-paste(treedbhMELNHE$Stand, treedbhMELNHE$Plot, sep="_")
+treedbhMELNHE$Age3<-factor(treedbhMELNHE$Age, levels = c("Mid","Late"))
+treedbhMELNHE$Site<-factor(treedbhMELNHE$Site, levels = c("BEF", "HB", "JB"))
+
+NP_fol_2122mean_trait2<-read.csv("NP_fol_2122mean_trait_edited.csv")
+```
+
+Create a data file summarizing basal area by species 
+```{r}
+#Subset of study species only:
+treedbhMELNHEsub<-subset(treedbhMELNHE, Species == "YB"| Species == "PC" | Species == "WB" | Species == "BE" | Species == "SM" | Species =="RM")
+
+#Calculate relative basal area
+plot_sumba<-ddply(treedbhMELNHEsub, .(Site, Age, Stand, Plot,plotID, Treatment, Species), summarize,
+      BA2019sum = sum(liveBA19, na.rm=T))
+plot_sumba
+
+plot_sumba<-subset(plot_sumba, Plot !="7")
+str(plot_sumba)
+str(NP_fol_2122mean_trait)
+
+#Merge with different datasets
+CWM_NP_trait_species_2022<-merge(plot_sumba, NP_fol_2122mean_trait2)
+
+#Calculate total basal area given the species sampled
+total_sumba_2022trait<-ddply(CWM_NP_trait_species_2022,.(Site, Age, Stand, Plot,Treatment), summarize,
+        BA2019tot = sum(BA2019sum, na.rm=T))
+
+#Calculate proportion of basal area per species given the species sampled
+CWM_NP_trait_species_2022_ba<-full_join(total_sumba_2022trait, CWM_NP_trait_species_2022)
+CWM_NP_trait_species_2022_ba$prop2019<-CWM_NP_trait_species_2022_ba$BA2019sum/CWM_NP_trait_species_2022_ba$BA2019tot
+
+#Check to make sure proportions add up to 1
+propcheck_2022trait<-ddply(CWM_NP_trait_species_2022_ba,.(Site, Age, Stand, Plot,Treatment), summarize,
+        Check = sum(prop2019, na.rm=T))
+
+write.csv(CWM_NP_trait_species_2022_ba, "BA_2023trait_2024.csv")
+```
+
+Calculate CWM:
+```{r}
+CWM_NP<-ddply(CWM_NP_trait_species_2022_ba, c("Site","Stand","Treatment","Age","Plot","Ntrt","Ptrt"),summarize,
+     Ncwm= sum(N*prop2019, na.rm=T),
+     Pcwm = sum(P*prop2019, na.rm=T),
+     LDMCcwm=sum(LDMC*prop2019, na.rm=T),
+     SLAcwm = sum(SLA*prop2019, na.rm=T),
+     d13Ccwm = sum(d13C*prop2019, na.rm=T),
+     Pareacwm = sum(Parea*prop2019, na.rm=T),
+     Nareacwm = sum(Narea*prop2019, na.rm=T))
+```
+
+Write models:
+```{r}
+CWM_NP$Age2<-ifelse(CWM_NP$Stand=="C1"|CWM_NP$Stand=="C2"|CWM_NP$Stand=="C4"|CWM_NP$Stand=="C6"|CWM_NP$Stand=="HBM"|CWM_NP$Stand=="JBM","Mid","Old")
+CWM_NP$Age<-ifelse(CWM_NP$Stand=="C1"|CWM_NP$Stand=="C2"|CWM_NP$Stand=="C4"|CWM_NP$Stand=="C6"|CWM_NP$Stand=="HBM"|CWM_NP$Stand=="JBM","Mid","Old")
+
+CWM_NP$Site<-as.factor(CWM_NP$Site)
+CWM_NP$Age2<-as.factor(CWM_NP$Age2)
+
+CWM_NP$Ntrt<-as.factor(CWM_NP$Ntrt)
+CWM_NP$Ptrt<-as.factor(CWM_NP$Ptrt)
+CWM_NP_prelim<-subset(CWM_NP, Stand == "C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+
+#P
+CWM_P<-lmer(Pcwm~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP)
+plot(CWM_P)
+hist(resid(CWM_P))
+shapiro.test(resid(CWM_P))
+fixef(CWM_P)
+se.fixef(CWM_P)
+anova(CWM_P, type=3)
+CWM_P
+summary(CWM_P)
+difflsmeans(CWM_P, which ="Site", ddf = "Satterthwaite")
+difflsmeans(CWM_P)
+library(emmeans)
+emmeans(CWM_P, pairwise~Site)
+plot(allEffects(CWM_P))
+
+#Area-based P
+CWM_Pa<-lmer(Pareacwm~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP)
+plot(CWM_Pa)
+hist(resid(CWM_Pa))
+shapiro.test(resid(CWM_Pa))
+fixef(CWM_Pa)
+se.fixef(CWM_Pa)
+anova(CWM_Pa, type=3)
+plot(allEffects(CWM_Pa))
+
+#LDMC
+CWM_NP$lnLDMCcwm<-log(CWM_NP$LDMCcwm)
+CWM_LDMC<-lmer(LDMCcwm~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP)
+plot(CWM_LDMC)
+hist(resid(CWM_LDMC))
+shapiro.test(resid(CWM_LDMC))
+fixef(CWM_LDMC)
+se.fixef(CWM_LDMC)
+anova(CWM_LDMC, type=3)
+plot(allEffects(CWM_LDMC))
+difflsmeans(CWM_LDMC)
+emmeans(CWM_LDMC, pairwise~Ntrt:Ptrt)
+
+#SLA
+CWM_NP$lnSLAcwm<-log(CWM_NP$SLAcwm)
+CWM_SLA<-lmer(SLAcwm~Ntrt*Ptrt+Age2 + Site + (1|Stand),data=CWM_NP)
+plot(CWM_SLA)
+hist(resid(CWM_SLA))
+shapiro.test(resid(CWM_SLA))
+fixef(CWM_SLA)
+se.fixef(CWM_SLA)
+anova(CWM_SLA, type=3)
+plot(allEffects(CWM_SLA))
+summary(CWM_SLA)
+library(emmeans)
+emmeans(CWM_SLA, pairwise~Ntrt:Ptrt)
+difflsmeans(CWM_SLA)
+str(CWM_SLA)
+
+#d13C
+CWM_d13C<-lmer(d13Ccwm~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_prelim)
+plot(CWM_d13C)
+hist(resid(CWM_d13C))
+shapiro.test(resid(CWM_d13C))
+fixef(CWM_d13C)
+se.fixef(CWM_d13C)
+anova(CWM_d13C, type=3)
+plot(allEffects(CWM_d13C))
+difflsmeans(CWM_d13C)
+summary(CWM_d13C)
+emmeans(CWM_d13C, pairwise~Ptrt)
+
+CWM_NP$Age2<-as.factor(CWM_NP$Age2)
+
+#N 
+CWM_N<-lmer(Ncwm~Ntrt*Ptrt+Age2+ Site+ (1|Stand),data=CWM_NP)
+plot(CWM_N)
+hist(resid(CWM_N))
+shapiro.test(resid(CWM_N))
+fixef(CWM_N)
+se.fixef(CWM_N)
+anova(CWM_N, type=3)
+plot(allEffects(CWM_N))
+summary(CWM_N)
+library(lmerTest)
+difflsmeans(CWM_N)
+
+#Area-based N
+CWM_Na<-lmer(Nareacwm~Ntrt*Ptrt+Age2+ Site+ (1|Stand),data=CWM_NP)
+plot(CWM_Na)
+hist(resid(CWM_Na))
+shapiro.test(resid(CWM_Na))
+fixef(CWM_Na)
+se.fixef(CWM_Na)
+anova(CWM_Na, type=3)
+plot(allEffects(CWM_Na))
+summary(CWM_Na)
+library(lmerTest)
+difflsmeans(CWM_N)
+```
+
+CWM Graphs
+```{r}
+#Plot with treatment across stands
+CWM_Nplot<-ggplot(CWM_NP,aes(x=Stand, y = Ncwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+    labs(shape = 'Age')+
+  ylab(parse(text='scriptstyle(Foliar~~N~~(mg~~g^{-1}))'))+
+  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_Nplot)
+
+CWM_Nareaplot<-ggplot(CWM_NP,aes(x=Stand, y = Nareacwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray","red","blue","purple"))+
+       scale_fill_manual(values =c("gray","red","blue","purple"))+
+    labs(shape = 'Age')+
+   ylab("Foliar N (mg/cm2)")+
+  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_Nareaplot)
+
+CWM_d13Cplot<-ggplot(CWM_NP_prelim,aes(x=Stand, y = d13Ccwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+    labs(shape = 'Age')+
+ylab(expression(paste(delta ^13,'C'))) +  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_d13Cplot)
+
+CWM_Pplot<-ggplot(CWM_NP, aes(x=Stand, y = Pcwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+    labs(shape = 'Age')+
+  ylab(parse(text='scriptstyle(Foliar~~P~~(mg~~g^{-1}))'))+
+  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_Pplot)
+
+CWM_Pareaplot<-ggplot(CWM_NP, aes(x=Stand, y = Pareacwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+    labs(shape = 'Age')+
+   ylab("Foliar P (mg/cm2)")+
+  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_Pareaplot)
+
+CWM_SLAplot<-ggplot(CWM_NP, aes(x=Stand, y = SLAcwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+    labs(shape = 'Age')+
+  ylab(parse(text='scriptstyle(SLA~~(m^{2}~~kg^{-1}))'))+
+  theme_bw(base_size=16)+
+    theme(legend.position="none")
+plot(CWM_SLAplot)
+
+CWM_LDMCplot<-ggplot(CWM_NP, aes(x=Stand, y = LDMCcwm, color=Treatment, fill=Treatment, shape = Age2))+
+  geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+  ylab(parse(text='scriptstyle(LDMC~~(mg~~g^{-1}))'))+
+  theme_bw(base_size=16)+
+  theme(legend.position="none")
+plot(CWM_LDMCplot)
+
+CWM_LDMCplot2<-ggplot(CWM_NP, aes(x=Stand, y = LDMCcwm, color=Treatment, shape = Age))+
+    geom_point(size=4, alpha = 0.5)+
+     scale_color_manual(values =c("gray30","red","blue","purple"))+
+       scale_fill_manual(values =c("gray30","red","blue","purple"))+
+   ylab("LDMC (mg/g)")+
+  theme_bw(base_size=16)+
+  theme(legend.position="right")
+plot(CWM_LDMCplot2)
+
+#Graph all together
+plot_grid(CWM_Nplot, CWM_Pplot, CWM_LDMCplot, CWM_SLAplot, CWM_d13Cplot, ncol=2, labels=c("(a)", "(b)", "(c)", "(d)", "(e)"))
+```
+
+Fixed CWM (Interspecific CWM): use study-wide averages for each species (one value per species)
+```{r}
+NP_fol_2122mean_trait_fixed<-ddply(NP_fol, c("Species"), summarise,
+      N = mean(N, na.rm=T),
+      P = mean(P.178, na.rm=T),
+      LDMC = mean(LDMC, na.rm=T),
+      SLA = mean(SLA_m2kg, na.rm=T),
+      StomDen = mean(Stomatal_Density, na.rm=T),
+      d13C = mean(d13C, na.rm=T),
+      Narea = mean(Narea, na.rm=T),
+      Parea = mean(Parea, na.rm=T))
+```
+
+Merge the files:
+```{r}
+CWM_NP_trait_species_2022f<-merge(plot_sumba, NP_fol_2122mean_trait_fixed)
+
+#Calculate total basal area given the species sampled
+total_sumba_2022traitf<-ddply(CWM_NP_trait_species_2022f,.(Site, Age, Stand, Plot,Treatment), summarize,
+        BA2019tot = sum(BA2019sum, na.rm=T))
+
+#Calculate proportion of basal area per species given the species sampled
+CWM_NP_trait_species_2022_baf<-full_join(total_sumba_2022traitf, CWM_NP_trait_species_2022f)
+CWM_NP_trait_species_2022_baf$prop2019<-CWM_NP_trait_species_2022_baf$BA2019sum/CWM_NP_trait_species_2022_baf$BA2019tot
+
+CWM_NP_trait_species_2022_baf<-subset(CWM_NP_trait_species_2022_baf, Plot=="1"|Plot=="2"|Plot=="3"|Plot=="4")
+CWM_NP_trait_species_2022_baf<-subset(CWM_NP_trait_species_2022_baf, Stand=="C1"|Stand=="C2"|Stand=="C4"|Stand=="C6"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+
+#Check to make sure proportions add up to 1
+propcheck_2022traitf<-ddply(CWM_NP_trait_species_2022_baf,.(Site, Age, Stand, Plot,Treatment), summarize,
+        Check = sum(prop2019, na.rm=T))
+
+CWM_NP_trait_species_2022_baf$Ntrt<-ifelse(CWM_NP_trait_species_2022_baf$Treatment=="NP"|CWM_NP_trait_species_2022_baf$Treatment=="N",1,0)
+CWM_NP_trait_species_2022_baf$Ptrt<-ifelse(CWM_NP_trait_species_2022_baf$Treatment=="NP"|CWM_NP_trait_species_2022_baf$Treatment=="P",1,0)
+```
+
+Calculate Interspecific CWM:
+```{r}
+CWM_NP_fixed<-ddply(CWM_NP_trait_species_2022_baf, c("Site","Stand","Treatment","Age","Plot","Ntrt","Ptrt"),summarize,
+     Ncwmf= sum(N*prop2019, na.rm=T),
+     Pcwmf = sum(P*prop2019, na.rm=T),
+     LDMCcwmf=sum(LDMC*prop2019, na.rm=T),
+     SLAcwmf = sum(SLA*prop2019, na.rm=T),
+     d13Ccwmf = sum(d13C*prop2019, na.rm=T),
+     Nareacwmf = sum(Narea*prop2019, na.rm=T),
+     Pareacwmf = sum(Parea*prop2019, na.rm=T))
+
+CWM_NP_fixed$Age2<-ifelse(CWM_NP_fixed$Stand=="C1"|CWM_NP_fixed$Stand=="C2"|CWM_NP_fixed$Stand=="C4"|CWM_NP_fixed$Stand=="C6"|CWM_NP_fixed$Stand=="HBM"|CWM_NP_fixed$Stand=="JBM","Mid","Old")
+
+CWM_NP_fixed$Age<-recode_factor(CWM_NP_fixed$Age, "Mid"="Mid-successional")
+CWM_NP_fixed$Age<-recode_factor(CWM_NP_fixed$Age, "Old"="Mature")
+
+CWM_NP_fixed$Ntrt <- as.factor(CWM_NP_fixed$Ntrt)
+CWM_NP_fixed$Ptrt <- as.factor(CWM_NP_fixed$Ptrt)
+
+CWM_NP_fixed<-subset(CWM_NP_fixed, Stand == "C1"|Stand=="C2"|Stand=="C4"|Stand=="C6"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+```
+
+Write models:
+```{r}
+CWM_NP_prelimf<-subset(CWM_NP_fixed, Stand == "C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+
+#P
+CWM_Pf<-lmer(Pcwmf~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_fixed)
+plot(CWM_Pf)
+hist(resid(CWM_Pf))
+shapiro.test(resid(CWM_Pf))
+fixef(CWM_Pf)
+se.fixef(CWM_Pf)
+anova(CWM_Pf, type=3)
+plot(allEffects(CWM_Pf))
+summary(CWM_Pf)
+
+#Parea
+CWM_Pfa<-lmer(Pareacwmf~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_fixed)
+plot(CWM_Pfa)
+hist(resid(CWM_Pfa))
+shapiro.test(resid(CWM_Pfa))
+fixef(CWM_Pfa)
+se.fixef(CWM_Pfa)
+anova(CWM_Pfa, type=3)
+plot(allEffects(CWM_Pfa))
+summary(CWM_Pfa)
+
+#LDMC
+CWM_LDMCf<-lmer(LDMCcwmf~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_fixed)
+plot(CWM_LDMCf)
+hist(resid(CWM_LDMCf))
+shapiro.test(resid(CWM_LDMCf))
+fixef(CWM_LDMCf)
+se.fixef(CWM_LDMCf)
+anova(CWM_LDMCf, type=3)
+plot(allEffects(CWM_LDMCf))
+summary(CWM_LDMCf)
+
+#SLA
+CWM_SLAf<-lmer(SLAcwmf~Ntrt*Ptrt+Age2 + Site+(1|Stand),data=CWM_NP_fixed)
+plot(CWM_SLAf)
+hist(resid(CWM_SLAf))
+shapiro.test(resid(CWM_SLAf))
+fixef(CWM_SLAf)
+se.fixef(CWM_SLAf)
+anova(CWM_SLAf, type=3)
+plot(allEffects(CWM_SLAf))
+emmeans(CWM_SLAf, pairwise~Age2)
+summary(CWM_SLAf)
+
+#d13C
+CWM_d13Cf<-lmer(d13Ccwmf~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_prelimf)
+plot(CWM_d13Cf)
+hist(resid(CWM_d13Cf))
+shapiro.test(resid(CWM_d13Cf))
+fixef(CWM_d13Cf)
+se.fixef(CWM_d13Cf)
+anova(CWM_d13Cf, type=3)
+plot(allEffects(CWM_d13Cf))
+summary(CWM_d13Cf)
+emmeans(CWM_d13Cf, pairwise~Ptrt)
+emmeans(CWM_d13Cf, pairwise~Age2)
+
+#N 
+CWM_Nf<-lmer(Ncwmf~Ntrt*Ptrt+Age2 +Site+ (1|Stand),data=CWM_NP_fixed)
+plot(CWM_Nf)
+hist(resid(CWM_Nf))
+shapiro.test(resid(CWM_Nf))
+fixef(CWM_Nf)
+se.fixef(CWM_Nf)
+anova(CWM_Nf, type=3)
+plot(allEffects(CWM_Nf))
+summary(CWM_Nf)
+
+#Area-based N  
+CWM_Nfa<-lmer(Nareacwmf~Ntrt*Ptrt+Age2 +Site+ (1|Stand),data=CWM_NP_fixed)
+plot(CWM_Nfa)
+hist(resid(CWM_Nfa))
+shapiro.test(resid(CWM_Nfa))
+fixef(CWM_Nfa)
+se.fixef(CWM_Nfa)
+anova(CWM_Nfa, type=3)
+plot(allEffects(CWM_Nfa))
+summary(CWM_Nfa)
+
+#Plot with treatment across stands
+plot<-ggplot(CWM_NP_prelimf,aes(x=Stand, y = d13Ccwmf, color=Treatment))+
+   ylab("Community-Weighted d13C")+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "red", "purple"))+
+    labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+  print(plot)
+```
+
+Intraspecific CWM
+```{r}
+CWM_NP_intra<-merge(CWM_NP, CWM_NP_fixed, by = c("Site","Stand","Age2","Treatment", "Ntrt","Ptrt"))
+CWM_NP_intra$Ncwmint<-CWM_NP_intra$Ncwm-CWM_NP_intra$Ncwmf
+CWM_NP_intra$Pcwmint<-CWM_NP_intra$Pcwm-CWM_NP_intra$Pcwmf
+CWM_NP_intra$LDMCcwmint<-CWM_NP_intra$LDMCcwm-CWM_NP_intra$LDMCcwmf
+CWM_NP_intra$SLAcwmint<-CWM_NP_intra$SLAcwm-CWM_NP_intra$SLAcwmf
+CWM_NP_intra$d13Ccwmint<-CWM_NP_intra$d13Ccwm-CWM_NP_intra$d13Ccwmf
+CWM_NP_intra$Pareacwmint<-CWM_NP_intra$Pareacwm-CWM_NP_intra$Pareacwmf
+CWM_NP_intra$Nareacwmint<-CWM_NP_intra$Nareacwm-CWM_NP_intra$Nareacwmf
+```
+
+Intraspecific models:
+```{r}
+CWM_NP_prelimint<-subset(CWM_NP_intra, Stand == "C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="HBO"|Stand=="JBM"|Stand=="JBO")
+
+#P
+CWM_Pi<-lmer(Pcwmint~Ntrt*Ptrt+Age2 + Site + (1|Stand),data=CWM_NP_intra)
+plot(CWM_Pi)
+hist(resid(CWM_Pi))
+shapiro.test(resid(CWM_Pi))
+fixef(CWM_Pi)
+se.fixef(CWM_Pi)
+anova(CWM_Pi, type=3)
+plot(allEffects(CWM_Pi))
+summary(CWM_Pi)
+emmeans(CWM_Pi, pairwise ~Site)
+
+#P area
+CWM_Pia<-lmer(Pareacwmint~Ntrt*Ptrt+Age2 + Site + (1|Stand),data=CWM_NP_intra)
+plot(CWM_Pia)
+hist(resid(CWM_Pia))
+shapiro.test(resid(CWM_Pia))
+fixef(CWM_Pia)
+se.fixef(CWM_Pia)
+anova(CWM_Pia, CWM_Pia=3)
+plot(allEffects(CWM_Pi))
+summary(CWM_Pia)
+emmeans(CWM_Pia, pairwise ~Site)
+
+#LDMC
+CWM_LDMCi<-lmer(LDMCcwmint~Ntrt*Ptrt+Age2 + Site+(1|Stand),data=CWM_NP_intra)
+plot(CWM_LDMCi)
+hist(resid(CWM_LDMCi))
+shapiro.test(resid(CWM_LDMCi))
+fixef(CWM_LDMCi)
+se.fixef(CWM_LDMCi)
+anova(CWM_LDMCi, type=3)
+plot(allEffects(CWM_LDMCi))
+summary(CWM_LDMCi)
+
+CWM_NP_intra$lnSLAcwmint<-log(CWM_NP_intra$SLAcwmint)
+#SLA
+CWM_SLAi<-lmer(SLAcwmint~Ntrt*Ptrt+Age2 +Site+ (1|Stand),data=CWM_NP_intra)
+plot(CWM_SLAi)
+hist(resid(CWM_SLAi))
+shapiro.test(resid(CWM_SLAi))
+fixef(CWM_SLAi)
+se.fixef(CWM_SLAi)
+anova(CWM_SLAi, type=3)
+plot(allEffects(CWM_SLAi))
+summary(CWM_SLAi)
+
+#d13C
+CWM_d13Ci<-lmer(d13Ccwmint~Ntrt*Ptrt+Age2 + Site+ (1|Stand),data=CWM_NP_prelimint)
+plot(CWM_d13Ci)
+hist(resid(CWM_d13Ci))
+shapiro.test(resid(CWM_d13Ci))
+fixef(CWM_d13Ci)
+se.fixef(CWM_d13Ci)
+anova(CWM_d13Ci, type=3)
+plot(allEffects(CWM_d13Ci))
+summary(CWM_d13Ci)
+difflsmeans(CWM_d13Ci)
+
+#N
+CWM_Ni<-lmer(Ncwmint~Ntrt*Ptrt+Age2 +Site+(1|Stand),data=CWM_NP_intra)
+plot(CWM_Ni)
+hist(resid(CWM_Ni))
+shapiro.test(resid(CWM_Ni))
+fixef(CWM_Ni)
+se.fixef(CWM_Ni)
+ranef(CWM_Ni)
+anova(CWM_Ni, type=3)
+plot(allEffects(CWM_Ni))
+summary(CWM_Ni)
+
+#Area-based N
+CWM_Nia<-lmer(Nareacwmint~Ntrt*Ptrt+Age2 +Site+(1|Stand),data=CWM_NP_intra)
+plot(CWM_Nia)
+hist(resid(CWM_Nia))
+shapiro.test(resid(CWM_Nia))
+fixef(CWM_Nia)
+se.fixef(CWM_Nia)
+ranef(CWM_Nia)
+anova(CWM_Nia, type=3)
+plot(allEffects(CWM_Nia))
+summary(CWM_Nia)
+
+#Plot with treatment across stands
+plot<-ggplot(CWM_NP_prelimf,aes(x=Stand, y = d13Ccwmf, color=Treatment))+
+  geom_point(size=3)+
+     scale_color_manual(values =c("gray","blue","purple","red"))+
+   ylab("Community-Weighted d13C")+
+  theme_bw(base_size=16)
+print(plot)
+```
+
+PCA using vegan package
+```{r}
+NP_foltrait<- subset(NP_fol, select=c(ID, Site, Stand, Plot, Treatment, Age2, Ntrt, Ptrt, Species,Species_ID,SLA_m2kg, LDMC, d13C, N, P.178))
+NP_foltrait$SLA<-NP_foltrait$SLA_m2kg
+NP_foltrait$P<-NP_foltrait$P.178
+
+NP_foltraitNA<- na.omit(NP_foltrait)
+NPfoltraitNA_noC2<-subset(NP_foltraitNA, Stand !="C2")
+NPfoltraitNA_noC2C6<-subset(NP_foltraitNA, Stand !="C6")
+
+NPfoltraitNA_noC2C6$Treatment<- factor(NPfoltraitNA_noC2C6$Treatment, levels = c("Control","N","P","NP"), ordered=T)
+
+NP_foltraitSDNA<- na.omit(NP_foltraitSD)
+
+NP_foltrait_ord<-subset(NPfoltraitNA_noC2C6, select = c(SLA, LDMC, d13C, N, P))
+
+PCA2<-prcomp(NP_foltrait_ord, scale=TRUE)
+
+speciespca<-fviz_pca_biplot(PCA2,
+                geom.ind = "point",
+                label="var",
+                habillage = NPfoltraitNA_noC2C6$Species_ID, pointsize=3, palette= c("#009E73","#CC79A7","#E69F00","#D55E00","#56B4E9","#8968CD"), col.var="black",addEllipses=TRUE, ellipse.level=0.95)+xlim(-5,5)+ylim(-6,4)+scale_shape_manual(values = c(21,22,25,24,23,21))+theme(
+    legend.text = element_text(size = 15),
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15) )
+
+treatmentpca<-fviz_pca_biplot(PCA2,
+                label="var",
+                habillage = NPfoltraitNA_noC2C6$Treatment, col.var="black",pointshape = 21,pointsize=3, palette = c("gray30","blue","red","purple"), addEllipses=TRUE, ellipse.level=0.95)+ylim(-6,4)+xlim(-5,5)+theme(
+    legend.text = element_text(size = 15),
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15) )
+
+library(RColorBrewer)
+display.brewer.all()
+
+plot_grid(speciespca, treatmentpca, ncol=1, labels=c("(a)","(b)"))
+```
+
+
+Tree Growth Analyses
+
+Step 1: Add RBAI to treedbh dataset
+```{r}
+#Calculate 2011 BA
+treedbhMELNHE$RBAI<- ((1+((treedbhMELNHE$liveBA19-treedbhMELNHE$liveBA11)/treedbhMELNHE$liveBA11))^(1/8)-1)
+```
+
+Step 2: Try to isolate just the trees in this paper
+```{r}
+treedbhMELNHE$Plot<-as.factor(treedbhMELNHE$Plot)
+NP_fol$Plot<-as.factor(NP_fol$Plot)
+
+treedbhMELNHE_chapt3<-merge(treedbhMELNHE, NP_fol, by = c("Site","Stand","Plot","Species","TagID"))
+
+write.csv(treedbhMELNHE_chapt3, "treedbhMELNHE_chapt3_2.csv")
+write.csv(treedbhMELNHE, "treedbhMELNHE_RBAI_2.csv")
+```
+
+Added the average RBAI of the 9 double-trunk trees separately in Excel, then uploaded manually
+```{r}
+treedbhMELNHE_c3<-read.csv("treedbhMELNHE_chapt3_2_edited2024.csv")
+treedbhMELNHE_c3<-as.data.frame(treedbhMELNHE_c3)
+treedbhMELNHE_c3$RBAIpercent<-treedbhMELNHE_c3$RBAI*100
+str(treedbhMELNHE_c3)
+treedbhMELNHE_c3$Species_ID<-as.factor(treedbhMELNHE_c3$Species_ID)
+treedbhMELNHE_c3$Treatment<-factor(treedbhMELNHE_c3$Treatment.x, levels = c("Control","N","P","NP"))
+treedbhMELNHE_c3$Age2<-as.factor(treedbhMELNHE_c3$Age2)
+treedbhMELNHE_c3$Age2<-recode_factor(treedbhMELNHE_c3$Age2, "Old"="Late")
+treedbhMELNHE_c3$Age2<-factor(treedbhMELNHE_c3$Age2, levels = c("Mid","Late"), ordered=T)
+
+treedbhMELNHE_c3<-treedbhMELNHE_c3[c(1:397),]
+
+str(treedbhMELNHE_c3)
+unique(treedbhMELNHE_c3$Species_ID)
+    ```
+
+Graphs
+```{r}
+plot<-ggplot(treedbhMELNHE_c3,aes(x=Stand, y = RBAIpercent, fill=Treatment, col=Treatment, shape = Age2))+
+  geom_point(size=4, position = position_dodge(0.5), alpha=0.5)+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=3)+
+       scale_shape_manual(values =c(21,24))+
+         scale_fill_manual(values =c("gray30","blue", "red", "purple"))+
+           scale_color_manual(values =c("gray30","blue", "red", "purple"))+
+ylab(bquote('RBAI (% year' ^-1))+  
+  labs(shape = 'Age')+
+  theme_bw(base_size=20)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+
+plot+facet_wrap(vars(Species_ID))
+```
+
+Species-level models of RBAI
+```{r}
+#Beech
+treeDBH_BE<-subset(treedbhMELNHE_c3, Species =="BE")
+treeDBH_BE<-subset(treeDBH_BE, RBAI !=0)
+treeDBH_BE<-subset(treeDBH_BE, TagID !=1479)
+
+treeDBH_BE$Ntrt<-as.factor(treeDBH_BE$Ntrt)
+treeDBH_BE$Ptrt<-as.factor(treeDBH_BE$Ptrt)
+
+#Graph
+plot<-ggplot(treeDBH_BE,aes(x=Stand, y = RBAI, color=Treatment.y, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+
+#BE RBAI
+BE_RBAI<-lmer(RBAI~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE)
+plot(BE_RBAI)
+hist(resid(BE_RBAI))
+shapiro.test(resid(BE_RBAI))
+anova(BE_RBAI, type=3)
+difflsmeans(BE_RBAI)
+emmeans(BE_RBAI, ~Age2)
+#random effects of plot are zero, but no significant nutrient effects anyway. Significant age effect
+
+#BE N
+BE_RBAI_N<-lmer(N~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE)
+plot(BE_RBAI_N)
+hist(resid(BE_RBAI_N))
+shapiro.test(resid(BE_RBAI_N))
+anova(BE_RBAI_N, type=3)
+#no significant nutrient effects, but N = 1.17 and P = -0.999
+
+#BE P
+treeDBH_BE$lnP<-log(treeDBH_BE$P.178)
+BE_RBAI_P<-lmer(lnP~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE)
+plot(BE_RBAI_P)
+hist(resid(BE_RBAI_P))
+shapiro.test(resid(BE_RBAI_P))
+anova(BE_RBAI_P, type=3)
+#Positive effect of P, slight negative effect of N
+
+#BE SLA
+BE_RBAI_SLA<-lmer(SLA_m2kg~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE)
+plot(BE_RBAI_SLA)
+hist(resid(BE_RBAI_SLA))
+shapiro.test(resid(BE_RBAI_SLA))
+anova(BE_RBAI_SLA, type=3)
+
+#BE LDMC
+BE_RBAI_LDMC<-lmer(LDMC~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE)
+plot(BE_RBAI_LDMC)
+hist(resid(BE_RBAI_LDMC))
+shapiro.test(resid(BE_RBAI_LDMC))
+anova(BE_RBAI_LDMC, type=3)
+difflsmeans(BE_RBAI_LDMC)
+
+treeDBH_BE_13C<-subset(treeDBH_BE, Stand=="C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="JBM"|Stand=="HBO"|Stand=="JBO")
+treeDBH_BE_13C$d13C<-as.numeric(treeDBH_BE_13C$d13C)
+
+#BE 13C
+BE_RBAI_13C<-lmer(d13C~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_BE_13C)
+plot(BE_RBAI_13C)
+hist(resid(BE_RBAI_13C))
+shapiro.test(resid(BE_RBAI_13C))
+anova(BE_RBAI_13C, type=3)
+difflsmeans(BE_RBAI_13C)
+
+#Sugar Maple
+treeDBH_SM<-subset(treedbhMELNHE_c3, Species =="SM")
+treeDBH_SM
+treeDBH_SM$Ntrt<-as.factor(treeDBH_SM$Ntrt)
+treeDBH_SM$Ptrt<-as.factor(treeDBH_SM$Ptrt)
+
+#Graph
+plot<-ggplot(treeDBH_SM,aes(x=Stand, y = RBAI, color=Treatment, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+
+treeDBH_SM_out<-subset(treeDBH_SM, TagID !=8297)
+str(treeDBH_SM)
+str(treeDBH_SM_out)
+
+#SM RBAI
+SM_RBAI<-lmer(RBAI~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_SM)
+plot(SM_RBAI)
+hist(resid(SM_RBAI))
+shapiro.test(resid(SM_RBAI))
+anova(SM_RBAI, type=3)
+difflsmeans(SM_RBAI)
+lsmeans(SM_RBAI, ~Age2)
+
+SM_RBAI2<-lmer(RBAI~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_SM_out)
+plot(SM_RBAI2)
+hist(resid(SM_RBAI2))
+shapiro.test(resid(SM_RBAI2))
+anova(SM_RBAI2, type=3)
+plot(allEffects(SM_RBAI2))
+difflsmeans(SM_RBAI2)
+lsmeans(SM_RBAI2, ~Age2)
+
+#SM N
+SM_RBAI_N<-lmer(N~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=treeDBH_SM)
+plot(SM_RBAI_N)
+hist(resid(SM_RBAI_N))
+shapiro.test(resid(SM_RBAI_N))
+anova(SM_RBAI_N, type=3)
+difflsmeans(SM_RBAI_N)
+
+#SM P
+SM_RBAI_P<-lmer(P.178~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_SM)
+plot(SM_RBAI_P)
+hist(resid(SM_RBAI_P))
+shapiro.test(resid(SM_RBAI_P))
+anova(SM_RBAI_P, type=3)
+#no effect of N, P effect
+
+#SM LDMC
+SM_RBAI_LDMC<-lmer(LDMC~Ntrt*Ptrt+Age2 + Site+(1|Stand/Plot),data=treeDBH_SM)
+plot(SM_RBAI_LDMC)
+hist(resid(SM_RBAI_LDMC))
+shapiro.test(resid(SM_RBAI_LDMC))
+anova(SM_RBAI_LDMC, type=3)
+
+#SM SLA
+treeDBH_SM$lnSLA<-log(treeDBH_SM$SLA_m2kg)
+SM_RBAI_SLA<-lmer(lnSLA~Ntrt*Ptrt+Age2 +(1|Stand/Plot),data=treeDBH_SM)
+plot(SM_RBAI_SLA)
+hist(resid(SM_RBAI_SLA))
+shapiro.test(resid(SM_RBAI_SLA))
+anova(SM_RBAI_SLA, type=3)
+
+#SM 13C
+treeDBH_SM_13C<-subset(treeDBH_SM, Stand=="C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="JBM"|Stand=="HBO"|Stand=="JBO")
+treeDBH_SM_13C$d13C<-as.numeric(treeDBH_SM_13C$d13C)
+
+SM_RBAI_13C<-lmer(d13C~Ntrt*Ptrt+Age2 + Site+ (1|Stand/Plot),data=treeDBH_SM_13C)
+plot(SM_RBAI_13C)
+hist(resid(SM_RBAI_13C))
+shapiro.test(resid(SM_RBAI_13C))
+anova(SM_RBAI_13C, type=3)
+difflsmeans(SM_RBAI_13C)
+
+#Red Maple
+treeDBH_RM<-subset(treedbhMELNHE_c3, Species =="RM")
+treeDBH_RM<-subset(treeDBH_RM, Stand !="HBO")
+
+#Graph
+plot<-ggplot(treeDBH_RM,aes(x=Stand, y = RBAI, color=Treatment.y, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+
+treeDBH_RM$logRBAI<-log(treeDBH_RM$RBAI)
+treeDBH_RM$srRBAI<-(treeDBH_RM$RBAI)^0.5
+
+#RM RBAI
+RM_RBAI<-lmer(RBAI~Ntrt*Ptrt +Site+ (1|Stand/Plot),data=treeDBH_RM)
+plot(RM_RBAI)
+hist(resid(RM_RBAI))
+shapiro.test(resid(RM_RBAI))
+anova(RM_RBAI, type=3)
+#but no significant effects
+
+#RM N
+RM_RBAI_N<-lmer(N~Ntrt*Ptrt +Site+ (1|Stand/Plot),data=treeDBH_RM)
+plot(RM_RBAI_N)
+hist(resid(RM_RBAI_N))
+shapiro.test(resid(RM_RBAI_N))
+anova(RM_RBAI_N, type=3)
+#negative P effect, no N effect
+
+#RM P
+RM_RBAI_P<-lmer(P.178~Ntrt*Ptrt + Site+(1|Stand/Plot),data=treeDBH_RM)
+plot(RM_RBAI_P)
+hist(resid(RM_RBAI_P))
+shapiro.test(resid(RM_RBAI_P))
+anova(RM_RBAI_P, type=3)
+
+#RM SLA
+treeDBH_RM$lnSLA<-log(treeDBH_RM$SLA_m2kg)
+RM_RBAI_SLA<-lmer(lnSLA~Ntrt*Ptrt +Site+(1|Stand/Plot),data=treeDBH_RM)
+plot(RM_RBAI_SLA)
+hist(resid(RM_RBAI_SLA))
+shapiro.test(resid(RM_RBAI_SLA))
+anova(RM_RBAI_SLA, type=3)
+
+#RM LDMC      
+RM_RBAI_LDMC<-lmer(LDMC~Ntrt*Ptrt+Site+(1|Stand/Plot),data=treeDBH_RM)
+plot(RM_RBAI_LDMC)
+hist(resid(RM_RBAI_LDMC))
+shapiro.test(resid(RM_RBAI_LDMC))
+anova(RM_RBAI_LDMC, type=3)
+
+#RM d13C
+treeDBH_RM_13C<-subset(treeDBH_RM, Stand=="C1"|Stand=="C4"|Stand=="C8"|Stand=="C9"|Stand=="HBM"|Stand=="JBM"|Stand=="HBO"|Stand=="JBO")
+treeDBH_RM_13C$d13C<-as.numeric(treeDBH_RM_13C$d13C)
+
+treeDBH_RM_13C$d13C<-as.numeric(treeDBH_RM_13C$d13C)
+
+RM_RBAI_13C<-lmer(d13C~Ntrt*Ptrt + (1|Stand/Plot),data=treeDBH_RM_13C)
+plot(RM_RBAI_13C)
+hist(resid(RM_RBAI_13C))
+shapiro.test(resid(RM_RBAI_13C))
+anova(RM_RBAI_13C, type=3)
+difflsmeans(RM_RBAI_13C)
+
+#Yellow Birch
+treeDBH_YB<-subset(treedbhMELNHE_c3, Species =="YB")
+treeDBH_YB<-subset(treeDBH_YB, Stand !="C2") #do this because there's only one tree in C2
+
+treeDBH_YB$Ntrt<-as.factor(treeDBH_YB$Ntrt)
+treeDBH_YB$Ptrt<-as.factor(treeDBH_YB$Ptrt)
+treeDBH_YB$Age2<-as.factor(treeDBH_YB$Age2)
+write.csv(treeDBH_YB, "treeDBH_YB.csv")
+
+#Graph
+plot<-ggplot(treeDBH_YB,aes(x=Stand, y = RBAI, color=Treatment.y, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+
+treeDBH_YBna<-subset(treeDBH_YB, RBAI != "NA")
+str(treeDBH_YB) #93
+str(treeDBH_YBna) #81
+str(YB_RBAI)
+
+#YB RBAI
+YB_RBAI<-lmer(RBAI~Ntrt*Ptrt + Age2+Site+ (1|Stand/Plot),data=treeDBH_YB)
+plot(YB_RBAI)
+hist(resid(YB_RBAI))
+shapiro.test(resid(YB_RBAI))
+anova(YB_RBAI, type=3)
+difflsmeans(YB_RBAI)
+emmeans(YB_RBAI, ~Ntrt)
+emmeans(YB_RBAI, ~Age2)
+
+#YB N
+YB_RBAI_N<-lmer(N~Ntrt*Ptrt + Age2+Site+ (1|Stand/Plot),data=treeDBH_YB)
+plot(YB_RBAI_N)
+hist(resid(YB_RBAI_N))
+shapiro.test(resid(YB_RBAI_N))
+anova(YB_RBAI_N, type=3)
+difflsmeans(YB_RBAI_N)
+
+#YB P
+YB_RBAI_P<-lmer(P.178~Ntrt*Ptrt + Age2+Site+ (1|Stand/Plot),data=treeDBH_YB)
+plot(YB_RBAI_P)
+hist(resid(YB_RBAI_P))
+shapiro.test(resid(YB_RBAI_P))
+anova(YB_RBAI_P, type=3)
+difflsmeans(YB_RBAI_P)
+
+#YB SLA
+YB_RBAI_SLA<-lmer(SLA_m2kg~Ntrt*Ptrt + Age2+ (1|Stand/Plot),data=treeDBH_YB)
+plot(YB_RBAI_SLA)
+hist(resid(YB_RBAI_SLA))
+shapiro.test(resid(YB_RBAI_SLA))
+anova(YB_RBAI_SLA, type=3)
+
+#yB LDMC
+YB_RBAI_LDMC<-lmer(LDMC~Ntrt*Ptrt + Age2+ Site+(1|Stand/Plot),data=treeDBH_YB)
+plot(YB_RBAI_LDMC)
+hist(resid(YB_RBAI_LDMC))
+shapiro.test(resid(YB_RBAI_LDMC))
+anova(YB_RBAI_LDMC, type=3)
+
+#YB d13C
+treeDBH_YB2<-subset(treeDBH_YB, Stand != "C6")
+str(treeDBH_YB2)
+treeDBH_YB2$d13C<-as.numeric(treeDBH_YB2$d13C)
+YB_RBAI_d13C<-lmer(d13C~Ntrt*Ptrt + Age2+ Site+(1|Stand/Plot),data=treeDBH_YB2)
+plot(YB_RBAI_d13C)
+hist(resid(YB_RBAI_d13C))
+shapiro.test(resid(YB_RBAI_d13C))
+anova(YB_RBAI_d13C, type=3)
+
+#White Birch
+treeDBH_WB<-subset(treedbhMELNHE_c3, Species =="WB")
+
+#Graph
+plot<-ggplot(treeDBH_WB,aes(x=Stand, y = RBAI, color=Treatment.y, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+
+treeDBH_WB$Ntrt<-as.factor(treeDBH_WB$Ntrt)
+
+#WB RBAI
+WB_RBAI<-lmer(RBAI~Ntrt*Ptrt + Site+(1|Stand),data=treeDBH_WB)
+plot(WB_RBAI)
+hist(resid(WB_RBAI))
+shapiro.test(resid(WB_RBAI))
+anova(WB_RBAI, type=3)
+difflsmeans(WB_RBAI)
+emmeans(WB_RBAI, ~Ntrt)
+#Not normal, N is significant
+
+#WB N
+WB_RBAI_N<-lmer(N~Ntrt*Ptrt +Site+ (1|Stand/Plot),data=treeDBH_WB)
+plot(WB_RBAI_N)
+hist(resid(WB_RBAI_N))
+shapiro.test(resid(WB_RBAI_N))
+anova(WB_RBAI_N, type=3)
+difflsmeans(WB_RBAI_N)
+
+#WB P
+treeDBH_WB$lnP<-log(treeDBH_WB$P.178)
+WB_RBAI_P<-lmer(lnP~Ntrt*Ptrt +Site+ (1|Stand/Plot),data=treeDBH_WB)
+plot(WB_RBAI_P)
+hist(resid(WB_RBAI_P))
+shapiro.test(resid(WB_RBAI_P))
+anova(WB_RBAI_P, type=3)
+difflsmeans(WB_RBAI_P)
+
+#WB SLA
+treeDBH_WB$lnSLA<-log(treeDBH_WB$SLA_m2kg)
+WB_RBAI_SLA<-lmer(SLA_m2kg~Ntrt*Ptrt + Site+(1|Stand/Plot),data=treeDBH_WB)
+plot(WB_RBAI_SLA)
+hist(resid(WB_RBAI_SLA))
+shapiro.test(resid(WB_RBAI_SLA))
+anova(WB_RBAI_SLA, type=3)
+max(resid(WB_RBAI_SLA))
+
+treeDBH_WB2<-subset(treeDBH_WB, TagID!=8513)
+
+WB_RBAI_SLA2<-lmer(SLA_m2kg~Ntrt*Ptrt +Site+(1|Stand/Plot),data=treeDBH_WB2)
+plot(WB_RBAI_SLA2)
+hist(resid(WB_RBAI_SLA2))
+shapiro.test(resid(WB_RBAI_SLA2))
+anova(WB_RBAI_SLA2, type=3)
+max(resid(WB_RBAI_SLA2))
+
+#WB LDMC
+WB_RBAI_LDMC<-lmer(LDMC~Ntrt*Ptrt + Site+ (1|Stand/Plot),data=treeDBH_WB)
+plot(WB_RBAI_LDMC)
+hist(resid(WB_RBAI_LDMC))
+shapiro.test(resid(WB_RBAI_LDMC))
+anova(WB_RBAI_LDMC, type=3)
+max(resid(WB_RBAI_LDMC))
+
+#WB d13C
+treeDBH_WB2<-subset(treeDBH_WB, Stand =="C1"|Stand=="C4"|Stand=="HBM"|Stand=="JBM")
+treeDBH_WB2$d13C<-as.numeric(treeDBH_WB2$d13C)
+WB_RBAI_d13C<-lmer(d13C~Ntrt*Ptrt + Site+ (1|Stand/Plot),data=treeDBH_WB2)
+plot(WB_RBAI_d13C)
+hist(resid(WB_RBAI_d13C))
+shapiro.test(resid(WB_RBAI_d13C))
+anova(WB_RBAI_d13C, type=3)
+max(resid(WB_RBAI_d13C))
+
+#Pin Cherry
+treeDBH_PC<-subset(treedbhMELNHE_c3, Species =="PC")
+
+plot<-ggplot(treeDBH_PC,aes(x=Stand, y = RBAI, color=Treatment.y, shape = Age2))+
+  geom_point(size=3, position = position_dodge(0.5))+
+    geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5, 7.5, 8.5, 9.5),lty=2)+
+     scale_color_manual(values =c("gray","blue", "purple", "red"))+
+ylab(bquote('RBAI'))+
+  labs(shape = 'Age')+
+  theme_bw(base_size=16)+
+     theme(axis.text.x=element_text(angle=90),
+           plot.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank())
+plot
+```
+
+PCA using RBAI trees:
+```{r}
+treedbhMELNHE_c3$d13C<-as.numeric(treedbhMELNHE_c3$d13C)
+
+NP_foltrait_RBAI<- subset(treedbhMELNHE_c3, select=c(ID, Site, Stand, Plot, Treatment, Age2, Ntrt, Ptrt, Species,Species_ID,SLA_m2kg, LDMC, d13C, N, P.178, RBAI))
+NP_foltrait_RBAI$SLA<-NP_foltrait_RBAI$SLA_m2kg
+NP_foltrait_RBAI$P<-NP_foltrait_RBAI$P.178
+
+NP_foltrait_RBAI_NA<- na.omit(NP_foltrait_RBAI)
+NPfoltraitNA_RBAI_noC2<-subset(NP_foltrait_RBAI_NA, Stand !="C2")
+NPfoltraitNA_RBAI_noC2C6<-subset(NPfoltraitNA_RBAI_noC2, Stand !="C6")
+
+NPfoltraitNA_RBAI_noC2C6$Treatment<- factor(NPfoltraitNA_RBAI_noC2C6$Treatment, levels = c("Control","N","P","NP"), ordered=T)
+
+NP_foltrait_ord_RBAI<-subset(NPfoltraitNA_RBAI_noC2C6, select = c(SLA, LDMC, d13C, N, P))
+NP_foltrait_ord_RBAI2<-subset(NPfoltraitNA_RBAI_noC2C6, select = c(SLA, LDMC, d13C, N, P, RBAI))
+
+PCA3<-PCA(NP_foltrait_ord_RBAI2, ind.sup = 1:5, 
+    quanti.sup = 6, quali.sup = NULL, graph = TRUE)
+
+PCA4<-prcomp(NP_foltrait_ord_RBAI, scale=TRUE)
+
+speciespca<-fviz_pca_biplot(PCA4,
+                label="var",
+                habillage = NPfoltraitNA_RBAI_noC2C6$Species_ID, pointshape=19, addEllipses=TRUE, ellipse.level=0.95)+xlim(-5,5)+ylim(-6,4)
+
+treatmentpca<-fviz_pca_biplot(PCA4,
+                label="var",
+                habillage = NPfoltraitNA_noC2C6$Treatment, col.var="black",pointshape=19,palette = c("gray","blue","red","purple"), addEllipses=TRUE, ellipse.level=0.95)+ylim(-6,4)+xlim(-5,5)
+
+plot_grid(speciespca, treatmentpca, ncol=1, labels="AUTO")
+```
+
+
+
+
